@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Research Speech Recording</title>
+<style>
+:root{font-family:Arial,sans-serif;color:#172033;background:#f4f7fb}
+*{box-sizing:border-box} body{margin:0}
+.wrap{max-width:650px;margin:40px auto;padding:18px}
+.card{background:#fff;border-radius:20px;padding:30px;box-shadow:0 8px 35px rgba(0,0,0,.08)}
+h1{margin:0;text-align:center;font-size:28px}
+.subtitle{text-align:center;color:#667085;margin:8px 0 28px}
+.section{border-top:1px solid #eaecf0;padding-top:20px;margin-top:20px}
+.section h2{font-size:18px;margin:0 0 15px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:15px}
+.field label{display:block;font-weight:600;margin-bottom:6px}
+input,select{width:100%;padding:12px;border:1px solid #d0d5dd;border-radius:9px;font-size:15px}
+input:focus,select:focus{outline:none;border-color:#175cd3;box-shadow:0 0 0 3px rgba(23,92,211,.1)}
+.timer{text-align:center;font-size:42px;font-weight:bold;margin:25px 0}
+.controls{display:flex;gap:12px}
+button{flex:1;border:0;border-radius:11px;padding:15px;font-size:16px;font-weight:bold;cursor:pointer}
+#record{background:#d92d20;color:#fff} #stop{background:#344054;color:#fff} #save{background:#175cd3;color:#fff}
+button:disabled{opacity:.45;cursor:not-allowed}
+audio{width:100%;margin-top:18px}
+.status{padding:13px;border-radius:10px;background:#eef4ff;color:#175cd3;margin-top:17px}
+.success{background:#ecfdf3;color:#027a48}.error{background:#fef3f2;color:#b42318}
+.note{font-size:13px;color:#667085;line-height:1.5;margin-top:18px}
+.saved{font-size:13px;color:#027a48;margin-top:10px}
+@media(max-width:650px){.grid{grid-template-columns:1fr}.controls{flex-direction:column}}
+</style>
+</head>
+<body>
+<div class="wrap"><div class="card">
+<h1>🎙️ Research Speech Recording</h1>
+<div class="subtitle">Speech Data Collection</div>
+
+<div class="section">
+<h2>Participant Information</h2>
+<div class="grid">
+  <div class="field">
+    <label for="name">Name</label>
+    <input id="name" type="text" placeholder="Enter participant name" autocomplete="name">
+  </div>
+  <div class="field">
+    <label for="gender">Gender</label>
+    <select id="gender">
+      <option value="">Select Gender</option>
+      <option>Male</option>
+      <option>Female</option>
+      <option>Other</option>
+      <option>Prefer not to say</option>
+    </select>
+  </div>
+  <div class="field">
+    <label for="age">Age</label>
+    <input id="age" type="number" min="1" max="120" placeholder="Enter age">
+  </div>
+</div>
+<div id="savedMessage" class="saved" hidden>✓ Participant details saved on this device</div>
+</div>
+
+<div class="section">
+<h2>Audio Recording</h2>
+<div class="timer" id="timer">00:00</div>
+<div class="controls">
+  <button id="record">● Record</button>
+  <button id="stop" disabled>■ Stop</button>
+  <button id="save" disabled>☁ Save to Google Drive</button>
+</div>
+<audio id="preview" controls hidden></audio>
+<div id="status" class="status">Enter participant details and click Record.</div>
+</div>
+
+<div class="note">
+Name, gender and age are remembered in this browser and stay unchanged until you edit them.
+Use the page over HTTPS so the browser can access the microphone.
+</div>
+</div></div>
+
+<iframe name="uploadFrame" id="uploadFrame" style="display:none"></iframe>
+
+<script>
+const UPLOAD_URL = 'https://script.google.com/macros/s/AKfycbwUXvrXQ6vKIJBJ2s_IkaXuesO-dzZATT9CwsTEhhlK077OLXrLnmYHvCc2X4LAwf41aQ/exec';
+
+let recorder=null, chunks=[], audioBlob=null, stream=null, timerId=null, seconds=0;
+const $=id=>document.getElementById(id);
+
+function setStatus(text,type=''){
+  $('status').textContent=text;
+  $('status').className='status '+type;
+}
+function saveDetails(){
+  localStorage.setItem('research_name',$('name').value.trim());
+  localStorage.setItem('research_gender',$('gender').value);
+  localStorage.setItem('research_age',$('age').value);
+  $('savedMessage').hidden=false;
+}
+function loadDetails(){
+  $('name').value=localStorage.getItem('research_name')||'';
+  $('gender').value=localStorage.getItem('research_gender')||'';
+  $('age').value=localStorage.getItem('research_age')||'';
+  if($('name').value||$('gender').value||$('age').value) $('savedMessage').hidden=false;
+}
+['name','age'].forEach(id=>$(id).addEventListener('input',saveDetails));
+$('gender').addEventListener('change',saveDetails);
+
+function lockDetails(lock){
+  $('name').disabled=lock;
+  $('gender').disabled=lock;
+  $('age').disabled=lock;
+}
+function updateTimer(){
+  seconds++;
+  $('timer').textContent=
+    String(Math.floor(seconds/60)).padStart(2,'0')+':'+
+    String(seconds%60).padStart(2,'0');
+}
+function safeName(s){
+  return s.replace(/[^a-zA-Z0-9_-]/g,'_').replace(/_+/g,'_').slice(0,50);
+}
+function recordingName(ext){
+  const d=new Date();
+  const stamp=d.getFullYear()+
+    String(d.getMonth()+1).padStart(2,'0')+
+    String(d.getDate()).padStart(2,'0')+'_'+
+    String(d.getHours()).padStart(2,'0')+
+    String(d.getMinutes()).padStart(2,'0')+
+    String(d.getSeconds()).padStart(2,'0');
+  return safeName($('name').value.trim())+'_'+stamp+'.'+ext;
+}
+
+$('record').onclick=async()=>{
+  const name=$('name').value.trim(), gender=$('gender').value, age=$('age').value;
+  if(!name){setStatus('Please enter participant name.','error');$('name').focus();return}
+  if(!gender){setStatus('Please select gender.','error');$('gender').focus();return}
+  if(!age){setStatus('Please enter age.','error');$('age').focus();return}
+  if(UPLOAD_URL.includes('PASTE_YOUR')){setStatus('Please configure the Apps Script Web App URL first.','error');return}
+
+  saveDetails();
+  try{
+    stream=await navigator.mediaDevices.getUserMedia({audio:true});
+    const types=['audio/webm;codecs=opus','audio/webm','audio/ogg;codecs=opus'];
+    const type=types.find(t=>MediaRecorder.isTypeSupported(t))||'';
+    recorder=new MediaRecorder(stream,type?{mimeType:type}:{});
+    chunks=[]; audioBlob=null; seconds=0; $('timer').textContent='00:00';
+    $('preview').hidden=true; $('save').disabled=true;
+
+    recorder.ondataavailable=e=>{if(e.data.size)chunks.push(e.data)};
+    recorder.onstop=()=>{
+      audioBlob=new Blob(chunks,{type:recorder.mimeType||'audio/webm'});
+      $('preview').src=URL.createObjectURL(audioBlob);
+      $('preview').hidden=false;
+      $('save').disabled=false;
+      if(stream) stream.getTracks().forEach(t=>t.stop());
+      lockDetails(false);
+      setStatus('Recording ready. Review it, then click Save to Google Drive.','success');
+    };
+
+    recorder.start();
+    lockDetails(true);
+    $('record').disabled=true; $('stop').disabled=false;
+    timerId=setInterval(updateTimer,1000);
+    setStatus('Recording… Speak clearly.');
+  }catch(err){
+    lockDetails(false);
+    setStatus('Microphone error: '+err.message,'error');
+  }
+};
+
+$('stop').onclick=()=>{
+  if(recorder&&recorder.state!=='inactive') recorder.stop();
+  clearInterval(timerId);
+  $('record').disabled=false; $('stop').disabled=true;
+};
+
+$('save').onclick=()=>{
+  if(!audioBlob)return;
+  saveDetails();
+  $('save').disabled=true;
+  setStatus('Uploading to Google Drive…');
+
+  const reader=new FileReader();
+  reader.onload=()=>{
+    const ext=audioBlob.type.includes('ogg')?'ogg':'webm';
+    const values={
+      name:$('name').value.trim(),
+      gender:$('gender').value,
+      age:$('age').value,
+      durationSeconds:seconds,
+      mimeType:audioBlob.type||'audio/webm',
+      fileName:recordingName(ext),
+      audioBase64:reader.result.split(',')[1]
+    };
+
+    const form=document.createElement('form');
+    form.method='POST'; form.action=UPLOAD_URL; form.target='uploadFrame'; form.style.display='none';
+    Object.entries(values).forEach(([key,value])=>{
+      const input=document.createElement('input');
+      input.type='hidden'; input.name=key; input.value=value; form.appendChild(input);
+    });
+    document.body.appendChild(form);
+    form.submit();
+    form.remove();
+
+    setTimeout(()=>{
+      setStatus('Upload submitted successfully. You can make another recording with the same participant details.','success');
+      $('save').disabled=false;
+    },2500);
+  };
+  reader.readAsDataURL(audioBlob);
+};
+
+loadDetails();
+</script>
+</body>
+</html>
